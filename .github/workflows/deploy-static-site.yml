@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: 'index.html'
+      purge_cloudflare:
+        description: 'Purge Cloudflare cache after deploy'
+        required: false
+        type: boolean
+        default: false
     secrets:
       SSH_PRIVATE_KEY:
         required: true
@@ -64,7 +69,7 @@ jobs:
             "test -f ${{ inputs.remote_path }}${{ inputs.verify_file }} && echo 'Deployment verified' || exit 1"
 
       - name: Purge Cloudflare cache
-        if: ${{ secrets.CF_ZONE_ID != '' }}
+        if: ${{ inputs.purge_cloudflare }}
         run: |
           curl -s -X POST \
             "https://api.cloudflare.com/client/v4/zones/${{ secrets.CF_ZONE_ID }}/purge_cache" \
