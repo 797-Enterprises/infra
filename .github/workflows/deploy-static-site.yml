@@ -1,0 +1,73 @@
+name: Deploy static site
+
+on:
+  workflow_call:
+    inputs:
+      source_path:
+        description: 'Local path to sync (e.g. ./ or ./site/)'
+        required: true
+        type: string
+      remote_path:
+        description: 'Remote path on server (e.g. /var/www/example.com/)'
+        required: true
+        type: string
+      verify_file:
+        description: 'File to verify after deploy (relative to remote_path)'
+        required: false
+        type: string
+        default: 'index.html'
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: true
+      SSH_HOST:
+        required: true
+      SSH_USER:
+        required: true
+      CF_ZONE_ID:
+        required: false
+      CF_API_TOKEN:
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy static site
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Add server to known_hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy via rsync
+        run: |
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ${{ inputs.source_path }} \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ inputs.remote_path }}
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "test -f ${{ inputs.remote_path }}${{ inputs.verify_file }} && echo 'Deployment verified' || exit 1"
+
+      - name: Purge Cloudflare cache
+        if: ${{ secrets.CF_ZONE_ID != '' }}
+        run: |
+          curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/zones/${{ secrets.CF_ZONE_ID }}/purge_cache" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"purge_everything":true}'
