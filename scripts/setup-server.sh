@@ -15,6 +15,7 @@
 set -euo pipefail
 
 NODE_MIN_VERSION=20
+SSL_CERT_BOOTSTRAPPED=false
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
@@ -59,6 +60,72 @@ detect_domain() {
 
 is_nodejs_app() {
   [[ -f "${SITE_DIR}/package.json" ]] || [[ -f "${SITE_DIR}/ecosystem.config.js" ]]
+}
+
+# Returns true when the conf references an SSL cert that doesn't exist yet
+_ssl_cert_missing() {
+  local conf="$1"
+  local cert_path
+  cert_path="$(grep -oP '^\s*ssl_certificate\s+\K[^;]+' "$conf" 2>/dev/null | head -1 | xargs 2>/dev/null)"
+  [[ -n "$cert_path" ]] && [[ ! -f "$cert_path" ]]
+}
+
+# Write a stripped HTTP-only version of an SSL-enabled nginx conf.
+# Removes certbot's redirect server block and all SSL-specific directives,
+# converting listen 443 ssl → listen 80 so nginx can start before certs exist.
+_write_http_bootstrap_conf() {
+  local src="$1" dst="$2"
+  python3 - "$src" "$dst" <<'PYEOF'
+import sys, re
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    text = f.read()
+
+def strip_redirect_blocks(t):
+    """Remove server blocks that only redirect HTTP → HTTPS (added by certbot)."""
+    out, i = [], 0
+    while i < len(t):
+        m = re.search(r'\bserver\s*\{', t[i:])
+        if not m:
+            out.append(t[i:])
+            break
+        out.append(t[i : i + m.start()])
+        start = i + m.start()
+        depth = j = 0
+        j = start
+        while j < len(t):
+            if t[j] == '{':
+                depth += 1
+            elif t[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    block = t[start : j + 1]
+                    if 'return 301 https' not in block:
+                        out.append(block)
+                    i = j + 1
+                    break
+            j += 1
+        else:
+            break
+    return ''.join(out)
+
+text = strip_redirect_blocks(text)
+
+SSL_KEYS = (
+    'ssl_certificate ', 'ssl_certificate_key', 'ssl_trusted_certificate',
+    'ssl_dhparam', 'ssl_protocols', 'ssl_ciphers', 'ssl_prefer_server_ciphers',
+    'ssl_session', 'ssl_stapling', 'ssl_ecdh_curve', 'ssl_buffer_size',
+    'include /etc/letsencrypt/options',
+)
+lines = text.splitlines()
+lines = [l for l in lines if not any(k in l for k in SSL_KEYS)
+                          and '# managed by Certbot' not in l]
+lines = [re.sub(r'listen\s+443\s+ssl\b[^;]*', 'listen 80', l) for l in lines]
+
+with open(dst, 'w') as f:
+    f.write('\n'.join(lines) + '\n')
+PYEOF
 }
 
 DOMAIN="$(detect_domain)"
@@ -109,8 +176,15 @@ create_web_root() {
 install_nginx_conf() {
   [[ -f "$CONF_SOURCE" ]] || error "nginx config not found at: ${CONF_SOURCE}"
 
-  cp "$CONF_SOURCE" "$NGINX_CONF"
-  success "Copied nginx config to ${NGINX_CONF}"
+  if _ssl_cert_missing "$CONF_SOURCE"; then
+    warn "SSL cert referenced in nginx conf not found — installing HTTP-only config for certbot bootstrap"
+    _write_http_bootstrap_conf "$CONF_SOURCE" "$NGINX_CONF"
+    SSL_CERT_BOOTSTRAPPED=true
+    success "Copied HTTP-only bootstrap config to ${NGINX_CONF}"
+  else
+    cp "$CONF_SOURCE" "$NGINX_CONF"
+    success "Copied nginx config to ${NGINX_CONF}"
+  fi
 
   if [[ -L "$NGINX_ENABLED" ]]; then
     info "Site already enabled: ${NGINX_ENABLED}"
@@ -127,9 +201,13 @@ test_and_reload_nginx() {
 }
 
 run_certbot() {
-  if [[ "$SKIP_CERTBOT" == true ]]; then
+  if [[ "$SKIP_CERTBOT" == true ]] && [[ "$SSL_CERT_BOOTSTRAPPED" == false ]]; then
     info "Skipping certbot (--skip-certbot passed)"
     return
+  fi
+
+  if [[ "$SKIP_CERTBOT" == true ]] && [[ "$SSL_CERT_BOOTSTRAPPED" == true ]]; then
+    warn "--skip-certbot passed but SSL cert is missing — running certbot anyway to restore HTTPS"
   fi
 
   command -v certbot &>/dev/null || error "certbot not found — install it: sudo apt install certbot python3-certbot-nginx"
