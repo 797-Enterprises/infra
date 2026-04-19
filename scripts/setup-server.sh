@@ -246,8 +246,22 @@ verify_nodejs() {
     && success "Node.js $(node --version) is installed" \
     || warn "Node.js not found"
 
+  # Warn if PM2 daemon is already running as root
+  local pm2_owner
+  pm2_owner="$(ps aux | awk '/[p]m2.*God/ {print $1}' | head -1)"
+  if [[ -n "$pm2_owner" ]]; then
+    if [[ "$pm2_owner" == "root" ]]; then
+      warn "PM2 daemon is running as root — stop it and let the deploy user start it instead:"
+      warn "  sudo pm2 kill"
+      warn "  Then push to main; GitHub Actions will start PM2 as the deploy user"
+    else
+      success "PM2 daemon is running as '${pm2_owner}' (not root)"
+    fi
+  else
+    info "PM2 daemon not running — first deploy via GitHub Actions will start it as the deploy user"
+  fi
+
   info "Web root: ${WWW_ROOT}"
-  info "First deploy will run: npm ci && npm run build && pm2 start ecosystem.config.js"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -287,3 +301,6 @@ info "Next steps:"
 info "  1. Ensure DNS A record for ${DOMAIN} points to this server's IP"
 info "  2. Run: bash /path/to/infra/scripts/set-secrets.sh ${SITE_DIR}"
 info "  3. Push to main — the deploy workflow will handle the rest"
+if is_nodejs_app; then
+  info "  NOTE: Never start PM2 manually as root. GitHub Actions (deploy user) owns PM2."
+fi

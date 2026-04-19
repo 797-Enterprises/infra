@@ -161,6 +161,24 @@ if is_nodejs_app; then
   else
     info "PM2 startup already configured (or run manually: pm2 startup)"
   fi
+
+  # Detect PM2 daemon running as root and offer to kill it
+  local pm2_owner
+  pm2_owner="$(ps aux | awk '/[p]m2.*God/ {print $1}' | head -1)"
+  if [[ "$pm2_owner" == "root" ]]; then
+    echo ""
+    warn "PM2 daemon is currently running as root."
+    warn "It must be stopped so the deploy user ('${SSH_USER}') can own it."
+    read -rp "Kill the root PM2 daemon now? [Y/n]: " kill_pm2
+    if [[ "${kill_pm2,,}" != "n" ]]; then
+      pm2 kill
+      success "Root PM2 daemon stopped — first deploy will start it as '${SSH_USER}'"
+    else
+      warn "Skipped. Run 'sudo pm2 kill' manually before deploying."
+    fi
+  elif [[ -n "$pm2_owner" ]]; then
+    success "PM2 daemon is already running as '${pm2_owner}'"
+  fi
 fi
 
 # ── Set GitHub secrets ────────────────────────────────────────────────────────
