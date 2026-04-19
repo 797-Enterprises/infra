@@ -3,9 +3,10 @@
 # Configures nginx (and optionally Node.js + PM2) for a site on the server.
 # Auto-detects domain from nginx/*.conf and app type from package.json.
 #
-# Usage: sudo bash setup-server.sh [site-dir] [--skip-certbot]
+# Usage: sudo bash setup-server.sh [site-dir] [--skip-certbot] [--skip-node]
 #   site-dir      Path to the cloned site repo (default: current directory)
 #   --skip-certbot  Skip SSL certificate issuance
+#   --skip-node     Skip Node.js and PM2 installation (even if package.json is present)
 #
 # Example:
 #   cd /path/to/site-repo && sudo bash /path/to/infra/scripts/setup-server.sh
@@ -19,10 +20,12 @@ NODE_MIN_VERSION=20
 
 SITE_DIR=""
 SKIP_CERTBOT=false
+SKIP_NODE=false
 
 for arg in "$@"; do
   case "$arg" in
     --skip-certbot) SKIP_CERTBOT=true ;;
+    --skip-node)    SKIP_NODE=true ;;
     -*) echo "[WARN]  Unknown flag: $arg" ;;
     *) SITE_DIR="$arg" ;;
   esac
@@ -182,9 +185,11 @@ else
 fi
 echo ""
 
-if is_nodejs_app; then
+if is_nodejs_app && [[ "$SKIP_NODE" == false ]]; then
   ensure_node
   ensure_pm2
+elif [[ "$SKIP_NODE" == true ]] && is_nodejs_app; then
+  info "Skipping Node.js and PM2 installation (--skip-node passed)"
 fi
 
 create_web_root
