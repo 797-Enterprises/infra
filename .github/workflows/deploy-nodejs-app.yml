@@ -1,0 +1,76 @@
+name: Deploy Node.js app
+
+on:
+  workflow_call:
+    inputs:
+      remote_path:
+        description: 'Remote path on server (e.g. /var/www/example.com/)'
+        required: true
+        type: string
+      pm2_app_name:
+        description: 'PM2 app name defined in ecosystem.config.js'
+        required: true
+        type: string
+      node_version:
+        description: 'Node.js version to use on the runner'
+        required: false
+        type: string
+        default: '20'
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: true
+      SSH_HOST:
+        required: true
+      SSH_USER:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy Node.js app
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Add server to known_hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync source to server
+        run: |
+          rsync -avz --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='.next' \
+            --exclude='.env.local' \
+            --exclude='.env.production' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ inputs.remote_path }}
+
+      - name: Install, build, and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+            set -e
+            cd ${{ inputs.remote_path }}
+            npm ci --production=false
+            npm run build
+            pm2 restart ${{ inputs.pm2_app_name }} || pm2 start ecosystem.config.js
+            pm2 save
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} \
+            "pm2 show ${{ inputs.pm2_app_name }} | grep -q 'online' && echo 'Deployment verified' || exit 1"
